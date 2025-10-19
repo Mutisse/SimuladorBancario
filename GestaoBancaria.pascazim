@@ -1,0 +1,1236 @@
+program GestaoBancaria;
+
+const
+DEPOSITO_MENSAL = 50000.00;  // 50.000,00 Mt
+TAXA_ANUAL = 0.065;          // 6.5%
+MESES_TOTAL = 120;           // 10 anos
+MESES_POR_TRIMESTRE = 3;
+MAX_TENTATIVAS = 3;
+ARQUIVO_USUARIOS = 'usuarios.dat';
+ARQUIVO_SALDOS = 'saldos.dat';
+
+type
+TUsuario = record
+    nome: string[50];
+    senha: string[20];
+    conta: string[6];
+    bloqueado: boolean;
+    tentativas: integer;
+end;
+
+TSaldo = record
+    conta: string[6];
+    saldoContaCorrente: real;
+    saldoPoupanca: real;
+end;
+
+var
+investimentoTotal, saldo, jurosAcumulados, jurosTrimestrais: real;
+saldoContaCorrente, saldoPoupanca: real;
+mes, trimestre: integer;
+arquivo: text;
+opcao, subOpcao: integer;
+usuarios: array[1..10] of TUsuario;
+totalUsuarios: integer;
+usuarioLogado: TUsuario;
+contaLogada: boolean;
+
+// Função para converter integer para string
+function IntToStr(n: integer): string;
+var
+s: string;
+begin
+    Str(n, s);
+    IntToStr := s;
+end;
+
+// Função para converter real para string
+function FloatToStr(n: real): string;
+var
+s: string;
+begin
+    Str(n:0:2, s);
+    FloatToStr := s;
+end;
+
+// Função para tentar converter string para integer
+function TryStrToInt(s: string; var n: integer): boolean;
+var
+code: integer;
+begin
+    Val(s, n, code);
+    TryStrToInt := (code = 0);
+end;
+
+// Função para tentar converter string para real
+function TryStrToFloat(s: string; var n: real): boolean;
+var
+code: integer;
+begin
+    Val(s, n, code);
+    TryStrToFloat := (code = 0);
+end;
+
+// Procedimento para configurar cor do texto
+procedure SetCorTexto(cor: integer);
+begin
+    case cor of
+        1: write(#27'[91m');  // Vermelho
+        2: write(#27'[92m');  // Verde
+        3: write(#27'[93m');  // Amarelo
+        4: write(#27'[94m');  // Azul
+        else write(#27'[0m'); // Reset
+    end;
+end;
+
+// Procedimento para resetar cor
+procedure ResetCor;
+begin
+    write(#27'[0m');
+end;
+
+// Procedimento para mostrar mensagem de erro
+procedure MostrarErro(mensagem: string);
+begin
+    SetCorTexto(1); // Vermelho
+    writeln('ERRO: ', mensagem);
+    ResetCor;
+end;
+
+// Procedimento para mostrar mensagem de sucesso
+procedure MostrarSucesso(mensagem: string);
+begin
+    SetCorTexto(2); // Verde
+    writeln('SUCESSO: ', mensagem);
+    ResetCor;
+end;
+
+// Procedimento para mostrar mensagem de informação
+procedure MostrarInfo(mensagem: string);
+begin
+    SetCorTexto(4); // Azul
+    writeln('INFO: ', mensagem);
+    ResetCor;
+end;
+
+// Procedimento para delay com pontinhos animados
+procedure Processando(tempo: integer; mensagem: string);
+var
+i, j: integer;
+begin
+    SetCorTexto(3); // Amarelo
+    write(mensagem);
+    for i := 1 to tempo do
+    begin
+        for j := 1 to 3 do
+        begin
+            write('.');
+            delay(300);
+        end;
+        write(#8#8#8'   '#8#8#8);
+        delay(200);
+    end;
+    writeln;
+    ResetCor;
+end;
+
+// Procedimento para delay simples
+procedure DelaySimples(ms: integer);
+var
+i: integer;
+begin
+    for i := 1 to ms do
+    delay(1);
+end;
+
+// Função para calcular potência
+function Potencia(base: real; expoente: integer): real;
+var
+i: integer;
+resultado: real;
+begin
+    resultado := 1;
+    for i := 1 to expoente do
+    resultado := resultado * base;
+    Potencia := resultado;
+end;
+
+// Procedimento para limpar a tela
+procedure LimparTela;
+begin
+    clrscr;
+    writeln; writeln;
+end;
+
+// Função para calcular juros trimestrais
+function CalcularJurosTrimestrais(saldoAtual: real): real;
+var
+taxaTrimestral: real;
+begin
+    taxaTrimestral := TAXA_ANUAL / 4;
+    CalcularJurosTrimestrais := saldoAtual * taxaTrimestral;
+end;
+
+// Procedimento para imprimir linha da tabela
+procedure ImprimirLinha(mes: integer; investimento, juros, total: real);
+begin
+    writeln(mes:4, ' | ', investimento:12:2, ' | ', juros:12:2, ' | ', total:12:2);
+    writeln(arquivo, mes:4, ' | ', investimento:12:2, ' | ', juros:12:2, ' | ', total:12:2);
+end;
+
+// Procedimento para imprimir cabeçalho
+procedure ImprimirCabecalho;
+begin
+    writeln('MES | INVESTIMENTO   | JUROS         | TOTAL ACUMULADO');
+    writeln('----|---------------|---------------|----------------');
+    writeln(arquivo, 'MES | INVESTIMENTO   | JUROS         | TOTAL ACUMULADO');
+    writeln(arquivo, '----|---------------|---------------|----------------');
+end;
+
+// Procedimento para salvar usuários no arquivo
+procedure SalvarUsuarios;
+var
+arquivoUsuarios: file of TUsuario;
+i: integer;
+begin
+    assign(arquivoUsuarios, ARQUIVO_USUARIOS);
+    rewrite(arquivoUsuarios);
+    
+    for i := 1 to totalUsuarios do
+    begin
+        write(arquivoUsuarios, usuarios[i]);
+    end;
+    
+    close(arquivoUsuarios);
+end;
+
+// Procedimento para carregar usuários do arquivo
+procedure CarregarUsuarios;
+var
+arquivoUsuarios: file of TUsuario;
+begin
+    totalUsuarios := 0;
+    
+    // Verificar se o arquivo existe
+    {$I-}
+    assign(arquivoUsuarios, ARQUIVO_USUARIOS);
+    reset(arquivoUsuarios);
+    {$I+}
+    
+    if IOResult <> 0 then
+    begin
+        // Arquivo não existe, criar um vazio
+        rewrite(arquivoUsuarios);
+        close(arquivoUsuarios);
+        exit;
+    end;
+    
+    // Ler usuários do arquivo
+    while not eof(arquivoUsuarios) and (totalUsuarios < 10) do
+    begin
+        totalUsuarios := totalUsuarios + 1;
+        read(arquivoUsuarios, usuarios[totalUsuarios]);
+    end;
+    
+    close(arquivoUsuarios);
+end;
+
+// Procedimento para salvar saldos no arquivo
+procedure SalvarSaldos;
+var
+arquivoSaldos: file of TSaldo;
+saldoAtual: TSaldo;
+i: integer;
+encontrado: boolean;
+begin
+    assign(arquivoSaldos, ARQUIVO_SALDOS);
+    
+    // Verificar se o arquivo existe
+    {$I-}
+    reset(arquivoSaldos);
+    {$I+}
+    
+    if IOResult <> 0 then
+    begin
+        // Arquivo não existe, criar novo
+        rewrite(arquivoSaldos);
+    end
+    else
+    begin
+        // Procurar se já existe saldo para esta conta
+        encontrado := false;
+        while not eof(arquivoSaldos) do
+        begin
+            read(arquivoSaldos, saldoAtual);
+            if saldoAtual.conta = usuarioLogado.conta then
+            begin
+                encontrado := true;
+                break;
+            end;
+        end;
+        
+        if not encontrado then
+        begin
+            // Voltar ao final do arquivo para adicionar novo registro
+            seek(arquivoSaldos, filesize(arquivoSaldos));
+        end
+        else
+        begin
+            // Voltar uma posição para sobrescrever o registro
+            seek(arquivoSaldos, filepos(arquivoSaldos) - 1);
+        end;
+    end;
+    
+    // Salvar saldos atuais
+    saldoAtual.conta := usuarioLogado.conta;
+    saldoAtual.saldoContaCorrente := saldoContaCorrente;
+    saldoAtual.saldoPoupanca := saldoPoupanca;
+    
+    write(arquivoSaldos, saldoAtual);
+    close(arquivoSaldos);
+end;
+
+// Procedimento para carregar saldos do arquivo
+procedure CarregarSaldos;
+var
+arquivoSaldos: file of TSaldo;
+saldoAtual: TSaldo;
+encontrado: boolean;
+begin
+    // Valores padrão
+    saldoContaCorrente := 100000.00;
+    saldoPoupanca := 50000.00;
+    
+    if not contaLogada then
+        exit;
+    
+    // Verificar se o arquivo existe
+    {$I-}
+    assign(arquivoSaldos, ARQUIVO_SALDOS);
+    reset(arquivoSaldos);
+    {$I+}
+    
+    if IOResult <> 0 then
+    begin
+        // Arquivo não existe, usar valores padrão
+        exit;
+    end;
+    
+    // Procurar saldos para esta conta
+    encontrado := false;
+    while not eof(arquivoSaldos) do
+    begin
+        read(arquivoSaldos, saldoAtual);
+        if saldoAtual.conta = usuarioLogado.conta then
+        begin
+            saldoContaCorrente := saldoAtual.saldoContaCorrente;
+            saldoPoupanca := saldoAtual.saldoPoupanca;
+            encontrado := true;
+            break;
+        end;
+    end;
+    
+    close(arquivoSaldos);
+    
+    if not encontrado then
+    begin
+        // Primeiro acesso desta conta, salvar valores padrão
+        SalvarSaldos;
+    end;
+end;
+
+// Procedimento para inicializar usuários
+procedure InicializarUsuarios;
+begin
+    CarregarUsuarios;
+    contaLogada := false;
+end;
+
+// Função para validar nome
+function ValidarNome(nome: string): boolean;
+begin
+    ValidarNome := (length(nome) >= 3) and (length(nome) <= 30);
+end;
+
+// Função para validar senha
+function ValidarSenha(senha: string): boolean;
+begin
+    ValidarSenha := (length(senha) >= 4) and (length(senha) <= 20);
+end;
+
+// Função para validar número da conta
+function ValidarConta(conta: string): boolean;
+var
+i: integer;
+begin
+    if length(conta) <> 6 then
+    begin
+        ValidarConta := false;
+        exit;
+    end;
+    
+    ValidarConta := true;
+    for i := 1 to 6 do
+    begin
+        if not (conta[i] in ['0'..'9']) then
+        begin
+            ValidarConta := false;
+            exit;
+        end;
+    end;
+end;
+
+// Função para verificar se conta já existe
+function ContaExiste(conta: string): boolean;
+var
+i: integer;
+begin
+    ContaExiste := false;
+    for i := 1 to totalUsuarios do
+    begin
+        if usuarios[i].conta = conta then
+        begin
+            ContaExiste := true;
+            exit;
+        end;
+    end;
+end;
+
+// Procedimento para criar conta
+procedure CriarConta;
+var
+novoUsuario: TUsuario;
+confirmacao: string;
+begin
+    LimparTela;
+    writeln('=== CRIACAO DE CONTA ===');
+    writeln;
+    
+    if totalUsuarios >= 10 then
+    begin
+        MostrarErro('Limite maximo de contas atingido!');
+        writeln;
+        write('Pressione Enter para continuar...');
+        readln;
+        exit;
+    end;
+    
+    write('Digite seu nome completo (3-30 caracteres): ');
+    readln(novoUsuario.nome);
+    
+    if not ValidarNome(novoUsuario.nome) then
+    begin
+        MostrarErro('Nome deve ter entre 3 e 30 caracteres!');
+        writeln;
+        write('Pressione Enter para continuar...');
+        readln;
+        exit;
+    end;
+    
+    write('Crie uma senha (4-20 caracteres): ');
+    readln(novoUsuario.senha);
+    
+    if not ValidarSenha(novoUsuario.senha) then
+    begin
+        MostrarErro('Senha deve ter entre 4 e 20 caracteres!');
+        writeln;
+        write('Pressione Enter para continuar...');
+        readln;
+        exit;
+    end;
+    
+    write('Confirme a senha: ');
+    readln(confirmacao);
+    if confirmacao <> novoUsuario.senha then
+    begin
+        MostrarErro('Senhas nao coincidem!');
+        writeln;
+        write('Pressione Enter para continuar...');
+        readln;
+        exit;
+    end;
+    
+    write('Digite o numero da conta (6 digitos): ');
+    readln(novoUsuario.conta);
+    
+    if not ValidarConta(novoUsuario.conta) then
+    begin
+        MostrarErro('Conta deve ter exatamente 6 digitos!');
+        writeln;
+        write('Pressione Enter para continuar...');
+        readln;
+        exit;
+    end;
+    
+    if ContaExiste(novoUsuario.conta) then
+    begin
+        MostrarErro('Esta conta ja existe!');
+        writeln;
+        write('Pressione Enter para continuar...');
+        readln;
+        exit;
+    end;
+    
+    novoUsuario.bloqueado := false;
+    novoUsuario.tentativas := 0;
+    
+    totalUsuarios := totalUsuarios + 1;
+    usuarios[totalUsuarios] := novoUsuario;
+    
+    // Salvar usuários no arquivo
+    SalvarUsuarios;
+    
+    Processando(2, 'Criando conta');
+    MostrarSucesso('Conta criada com sucesso!');
+    MostrarInfo('Numero da conta: ' + novoUsuario.conta);
+    MostrarInfo('Guarde seus dados com seguranca!');
+end;
+
+// Procedimento para recuperar conta
+procedure RecuperarConta;
+var
+conta: string;
+i: integer;
+encontrado: boolean;
+begin
+    LimparTela;
+    writeln('=== RECUPERACAO DE CONTA ===');
+    writeln;
+    
+    write('Digite o numero da conta: ');
+    readln(conta);
+    
+    encontrado := false;
+    for i := 1 to totalUsuarios do
+    begin
+        if usuarios[i].conta = conta then
+        begin
+            encontrado := true;
+            if usuarios[i].bloqueado then
+            begin
+                usuarios[i].bloqueado := false;
+                usuarios[i].tentativas := 0;
+                
+                // Salvar alterações no arquivo
+                SalvarUsuarios;
+                
+                Processando(2, 'Recuperando conta');
+                MostrarSucesso('Conta desbloqueada com sucesso!');
+                MostrarInfo('Voce pode tentar fazer login novamente.');
+            end
+            else
+            begin
+                MostrarInfo('Esta conta nao esta bloqueada.');
+            end;
+            break;
+        end;
+    end;
+    
+    if not encontrado then
+    begin
+        MostrarErro('Conta nao encontrada!');
+    end;
+end;
+
+// Função para autenticar usuário
+function AutenticarUsuario: boolean;
+var
+conta, senha: string;
+i, tentativas: integer;
+usuarioEncontrado: boolean;
+begin
+    tentativas := 0;
+    
+    repeat
+        LimparTela;
+        writeln('=== LOGIN ===');
+        writeln;
+        
+        if tentativas > 0 then
+        begin
+            MostrarErro('Credenciais invalidas! Tentativas restantes: ' + 
+                       IntToStr(MAX_TENTATIVAS - tentativas));
+            writeln;
+        end;
+        
+        write('Numero da conta: ');
+        readln(conta);
+        write('Senha: ');
+        readln(senha);
+        
+        usuarioEncontrado := false;
+        // Buscar usuário
+        for i := 1 to totalUsuarios do
+        begin
+            if usuarios[i].conta = conta then
+            begin
+                usuarioEncontrado := true;
+                if usuarios[i].bloqueado then
+                begin
+                    MostrarErro('Conta bloqueada! Use a opcao de recuperacao.');
+                    AutenticarUsuario := false;
+                    exit;
+                end;
+                
+                if usuarios[i].senha = senha then
+                begin
+                    usuarioLogado := usuarios[i];
+                    usuarios[i].tentativas := 0;
+                    
+                    // Salvar alterações no arquivo (resetar tentativas)
+                    SalvarUsuarios;
+                    
+                    // Carregar saldos da conta
+                    contaLogada := true;
+                    CarregarSaldos;
+                    
+                    Processando(2, 'Autenticando');
+                    MostrarSucesso('Login realizado com sucesso!');
+                    MostrarInfo('Bem-vindo, ' + usuarioLogado.nome + '!');
+                    AutenticarUsuario := true;
+                    exit;
+                end
+                else
+                begin
+                    usuarios[i].tentativas := usuarios[i].tentativas + 1;
+                    if usuarios[i].tentativas >= MAX_TENTATIVAS then
+                    begin
+                        usuarios[i].bloqueado := true;
+                        
+                        // Salvar alterações no arquivo (bloquear conta)
+                        SalvarUsuarios;
+                        
+                        MostrarErro('Conta bloqueada apos ' + 
+                                   IntToStr(MAX_TENTATIVAS) + 
+                                   ' tentativas falhas!');
+                        MostrarInfo('Use a opcao de recuperacao de conta.');
+                        AutenticarUsuario := false;
+                        exit;
+                    end
+                    else
+                    begin
+                        // Salvar alterações no arquivo (incrementar tentativas)
+                        SalvarUsuarios;
+                    end;
+                end;
+                break;
+            end;
+        end;
+        
+        if not usuarioEncontrado then
+        begin
+            MostrarErro('Conta nao encontrada!');
+        end;
+        
+        tentativas := tentativas + 1;
+        
+        if tentativas < MAX_TENTATIVAS then
+        begin
+            writeln;
+            write('Pressione Enter para tentar novamente...');
+            readln;
+        end;
+        
+    until tentativas >= MAX_TENTATIVAS;
+    
+    MostrarErro('Numero maximo de tentativas atingido!');
+    AutenticarUsuario := false;
+end;
+
+// Procedimento para depositar dinheiro
+procedure Depositar;
+var
+valor: real;
+tipoConta: integer;
+input: string;
+begin
+    LimparTela;
+    writeln('=== DEPOSITO ===');
+    writeln;
+    writeln('1 - Conta Corrente');
+    writeln('2 - Poupanca');
+    writeln;
+    write('Escolha o tipo de conta (1-2): ');
+    readln(input);
+    
+    if not TryStrToInt(input, tipoConta) then
+    begin
+        MostrarErro('Opcao invalida!');
+        exit;
+    end;
+    
+    if (tipoConta < 1) or (tipoConta > 2) then
+    begin
+        MostrarErro('Opcao deve ser 1 ou 2!');
+        exit;
+    end;
+    
+    write('Digite o valor a depositar: ');
+    readln(input);
+    if not TryStrToFloat(input, valor) then
+    begin
+        MostrarErro('Valor invalido!');
+        exit;
+    end;
+    
+    if valor <= 0 then
+    begin
+        MostrarErro('O valor deve ser positivo!');
+        exit;
+    end;
+    
+    if valor > 1000000 then
+    begin
+        MostrarErro('Valor muito alto! Maximo: 1.000.000,00 Mt');
+        exit;
+    end;
+    
+    Processando(2, 'Processando deposito');
+    
+    if tipoConta = 1 then
+    begin
+        saldoContaCorrente := saldoContaCorrente + valor;
+        MostrarSucesso('Deposito de ' + FloatToStr(valor) + 
+                      ' Mt realizado na Conta Corrente.');
+    end
+    else
+    begin
+        saldoPoupanca := saldoPoupanca + valor;
+        MostrarSucesso('Deposito de ' + FloatToStr(valor) + 
+                      ' Mt realizado na Poupanca.');
+    end;
+    
+    // Salvar saldos atualizados
+    SalvarSaldos;
+end;
+
+// Procedimento para sacar dinheiro
+procedure Sacar;
+var
+valor: real;
+tipoConta: integer;
+input: string;
+begin
+    LimparTela;
+    writeln('=== SAQUE ===');
+    writeln;
+    writeln('1 - Conta Corrente');
+    writeln('2 - Poupanca');
+    writeln;
+    write('Escolha o tipo de conta (1-2): ');
+    readln(input);
+    
+    if not TryStrToInt(input, tipoConta) then
+    begin
+        MostrarErro('Opcao invalida!');
+        exit;
+    end;
+    
+    if (tipoConta < 1) or (tipoConta > 2) then
+    begin
+        MostrarErro('Opcao deve ser 1 ou 2!');
+        exit;
+    end;
+    
+    write('Digite o valor a sacar: ');
+    readln(input);
+    if not TryStrToFloat(input, valor) then
+    begin
+        MostrarErro('Valor invalido!');
+        exit;
+    end;
+    
+    if valor <= 0 then
+    begin
+        MostrarErro('O valor deve ser positivo!');
+        exit;
+    end;
+    
+    Processando(2, 'Processando saque');
+    
+    if tipoConta = 1 then
+    begin
+        if valor > saldoContaCorrente then
+        begin
+            MostrarErro('Saldo insuficiente! Saldo atual: ' + 
+                       FloatToStr(saldoContaCorrente) + ' Mt');
+            exit;
+        end;
+        saldoContaCorrente := saldoContaCorrente - valor;
+        MostrarSucesso('Saque de ' + FloatToStr(valor) + 
+                      ' Mt realizado da Conta Corrente.');
+    end
+    else
+    begin
+        if valor > saldoPoupanca then
+        begin
+            MostrarErro('Saldo insuficiente! Saldo atual: ' + 
+                       FloatToStr(saldoPoupanca) + ' Mt');
+            exit;
+        end;
+        saldoPoupanca := saldoPoupanca - valor;
+        MostrarSucesso('Saque de ' + FloatToStr(valor) + 
+                      ' Mt realizado da Poupanca.');
+    end;
+    
+    // Salvar saldos atualizados
+    SalvarSaldos;
+end;
+
+// Procedimento para consultar saldo
+procedure ConsultarSaldo;
+begin
+    LimparTela;
+    writeln('=== CONSULTA DE SALDO ===');
+    Processando(1, 'Consultando saldos');
+    writeln;
+    MostrarInfo('Saldo da Conta Corrente: ' + 
+                FloatToStr(saldoContaCorrente) + ' Mt');
+    MostrarInfo('Saldo da Poupanca: ' + 
+                FloatToStr(saldoPoupanca) + ' Mt');
+    writeln('-----------------------------');
+    SetCorTexto(3); // Amarelo
+    writeln('Saldo Total: ', 
+            (saldoContaCorrente + saldoPoupanca):0:2, ' Mt');
+    ResetCor;
+end;
+
+// Procedimento para transferir entre contas
+procedure Transferir;
+var
+valor: real;
+input: string;
+begin
+    LimparTela;
+    writeln('=== TRANSFERENCIA ENTRE CONTAS ===');
+    writeln;
+    writeln('1 - Da Conta Corrente para Poupanca');
+    writeln('2 - Da Poupanca para Conta Corrente');
+    writeln;
+    write('Escolha o tipo de transferencia (1-2): ');
+    readln(input);
+    
+    if not TryStrToInt(input, subOpcao) then
+    begin
+        MostrarErro('Opcao invalida!');
+        exit;
+    end;
+    
+    if (subOpcao < 1) or (subOpcao > 2) then
+    begin
+        MostrarErro('Opcao deve ser 1 ou 2!');
+        exit;
+    end;
+    
+    write('Digite o valor a transferir: ');
+    readln(input);
+    if not TryStrToFloat(input, valor) then
+    begin
+        MostrarErro('Valor invalido!');
+        exit;
+    end;
+    
+    if valor <= 0 then
+    begin
+        MostrarErro('O valor deve ser positivo!');
+        exit;
+    end;
+    
+    Processando(2, 'Processando transferencia');
+    
+    if subOpcao = 1 then
+    begin
+        if valor > saldoContaCorrente then
+        begin
+            MostrarErro('Saldo insuficiente na Conta Corrente!');
+            MostrarInfo('Saldo atual: ' + 
+                       FloatToStr(saldoContaCorrente) + ' Mt');
+            exit;
+        end;
+        saldoContaCorrente := saldoContaCorrente - valor;
+        saldoPoupanca := saldoPoupanca + valor;
+        MostrarSucesso('Transferencia de ' + FloatToStr(valor) + 
+                      ' Mt da Conta Corrente para Poupanca realizada.');
+    end
+    else
+    begin
+        if valor > saldoPoupanca then
+        begin
+            MostrarErro('Saldo insuficiente na Poupanca!');
+            MostrarInfo('Saldo atual: ' + 
+                       FloatToStr(saldoPoupanca) + ' Mt');
+            exit;
+        end;
+        saldoPoupanca := saldoPoupanca - valor;
+        saldoContaCorrente := saldoContaCorrente + valor;
+        MostrarSucesso('Transferencia de ' + FloatToStr(valor) + 
+                      ' Mt da Poupanca para Conta Corrente realizada.');
+    end;
+    
+    // Salvar saldos atualizados
+    SalvarSaldos;
+end;
+
+// Procedimento para simular empréstimo
+procedure SimularEmprestimo;
+var
+valor, taxaMensal, prestacao: real;
+prazo: integer;
+input: string;
+begin
+    LimparTela;
+    writeln('=== SIMULACAO DE EMPRESTIMO ===');
+    writeln;
+    write('Valor do emprestimo (Mt): ');
+    readln(input);
+    
+    if not TryStrToFloat(input, valor) then
+    begin
+        MostrarErro('Valor invalido!');
+        exit;
+    end;
+    
+    if (valor <= 0) or (valor > 1000000) then
+    begin
+        MostrarErro('Valor deve estar entre 1 e 1.000.000 Mt!');
+        exit;
+    end;
+    
+    write('Prazo (meses, 1-120): ');
+    readln(input);
+    if not TryStrToInt(input, prazo) then
+    begin
+        MostrarErro('Prazo invalido!');
+        exit;
+    end;
+    
+    if (prazo <= 0) or (prazo > 120) then
+    begin
+        MostrarErro('Prazo deve estar entre 1 e 120 meses!');
+        exit;
+    end;
+    
+    Processando(3, 'Calculando simulacao do emprestimo');
+    
+    // Taxa de juros mensal fixa para simulação (1.5% ao mês)
+    taxaMensal := 0.015;
+    
+    // Cálculo da prestação usando a fórmula de parcelas fixas
+    prestacao := valor * (taxaMensal * Potencia(1 + taxaMensal, prazo)) / 
+                 (Potencia(1 + taxaMensal, prazo) - 1);
+    
+    writeln;
+    writeln('=== RESULTADO DA SIMULACAO ===');
+    MostrarInfo('Valor do emprestimo: ' + FloatToStr(valor) + ' Mt');
+    MostrarInfo('Prazo: ' + IntToStr(prazo) + ' meses');
+    MostrarInfo('Taxa de juros mensal: ' + FloatToStr(taxaMensal * 100) + '%');
+    SetCorTexto(3); // Amarelo
+    writeln('Prestacao mensal: ', prestacao:0:2, ' Mt');
+    writeln('Total a pagar: ', (prestacao * prazo):0:2, ' Mt');
+    writeln('Juros totais: ', (prestacao * prazo - valor):0:2, ' Mt');
+    ResetCor;
+end;
+
+// Procedimento para simular a poupança
+procedure SimularPoupanca;
+var
+i: integer;
+begin
+    LimparTela;
+    writeln('=== SIMULACAO COMPLETA DA POUPANCA ===');
+    Processando(4, 'Calculando projecao para 10 anos');
+    writeln;
+    
+    // Inicializar variáveis
+    investimentoTotal := 0;
+    saldo := 0;
+    jurosAcumulados := 0;
+    
+    // Abrir arquivo para escrita
+    assign(arquivo, 'tabela_poupanca.txt');
+    rewrite(arquivo);
+    
+    // Imprimir cabeçalho
+    ImprimirCabecalho;
+    
+    // Mostrar progresso
+    writeln('Progresso: ');
+    write('[');
+    for i := 1 to 30 do write(' ');
+    write('] 0%');
+    
+    // Loop pelos 120 meses
+    for mes := 1 to MESES_TOTAL do
+    begin
+        // Adicionar depósito mensal
+        investimentoTotal := investimentoTotal + DEPOSITO_MENSAL;
+        saldo := saldo + DEPOSITO_MENSAL;
+       
+        // Verificar se é fim de trimestre
+        if (mes mod MESES_POR_TRIMESTRE = 0) then
+        begin
+            // Calcular juros do trimestre
+            jurosTrimestrais := CalcularJurosTrimestrais(saldo);
+            jurosAcumulados := jurosAcumulados + jurosTrimestrais;
+            saldo := saldo + jurosTrimestrais;
+           
+            // Imprimir linha com juros
+            ImprimirLinha(mes, investimentoTotal, jurosTrimestrais, saldo);
+        end
+        else
+        begin
+            // Imprimir linha sem juros
+            ImprimirLinha(mes, investimentoTotal, 0.00, saldo);
+        end;
+    end;
+    
+    writeln; // Nova linha após a barra de progresso
+    
+    // Fechar arquivo
+    close(arquivo);
+    
+    // Resumo final
+    writeln;
+    writeln('=== RESUMO FINAL APOS 10 ANOS ===');
+    MostrarInfo('Investimento total: ' + FloatToStr(investimentoTotal) + ' Mt');
+    MostrarInfo('Juros acumulados: ' + FloatToStr(jurosAcumulados) + ' Mt');
+    SetCorTexto(3); // Amarelo
+    writeln('Saldo final: ', saldo:0:2, ' Mt');
+    ResetCor;
+    writeln;
+    MostrarSucesso('Tabela detalhada salva em "tabela_poupanca.txt"');
+end;
+
+// Procedimento para mostrar resumo sem simulação completa
+procedure MostrarResumo;
+var
+investimentoTotalResumo, saldoResumo, jurosResumo: real;
+trimestre: integer;
+begin
+    LimparTela;
+    writeln('=== RESUMO RAPIDO DA POUPANCA ===');
+    Processando(2, 'Calculando resumo');
+    writeln;
+    
+    // Cálculo direto sem loop mensal
+    investimentoTotalResumo := MESES_TOTAL * DEPOSITO_MENSAL;
+    
+    // Cálculo aproximado dos juros (considerando capitalização trimestral)
+    saldoResumo := investimentoTotalResumo;
+    for trimestre := 1 to (MESES_TOTAL div MESES_POR_TRIMESTRE) do
+    begin
+        jurosTrimestrais := CalcularJurosTrimestrais(saldoResumo);
+        saldoResumo := saldoResumo + jurosTrimestrais;
+    end;
+    
+    jurosResumo := saldoResumo - investimentoTotalResumo;
+    
+    writeln('=== RESULTADOS ===');
+    MostrarInfo('Periodo: 10 anos (120 meses)');
+    MostrarInfo('Deposito mensal: ' + FloatToStr(DEPOSITO_MENSAL) + ' Mt');
+    MostrarInfo('Taxa de juros anual: ' + FloatToStr(TAXA_ANUAL * 100) + '%');
+    MostrarInfo('Investimento total: ' + FloatToStr(investimentoTotalResumo) + ' Mt');
+    MostrarInfo('Juros aproximados: ' + FloatToStr(jurosResumo) + ' Mt');
+    SetCorTexto(3); // Amarelo
+    writeln('Saldo final aproximado: ', saldoResumo:0:2, ' Mt');
+    ResetCor;
+end;
+
+// Procedimento para mostrar informações do programa
+procedure MostrarInformacoes;
+begin
+    LimparTela;
+    writeln('=== INFORMACOES DO PROGRAMA ===');
+    Processando(1, 'Carregando informacoes');
+    writeln;
+    MostrarInfo('Este programa simula uma aplicacao de poupanca com:');
+    writeln('- Deposito mensal fixo de 50.000,00 Mt');
+    writeln('- Taxa de juros anual de 6.5%');
+    writeln('- Periodo de 10 anos (120 meses)');
+    writeln('- Juros capitalizados trimestralmente');
+    writeln;
+    MostrarInfo('Operacoes bancarias disponiveis:');
+    writeln('- Deposito, Saque, Consulta de Saldo');
+    writeln('- Transferencia entre contas');
+    writeln('- Simulacao de emprestimo');
+    writeln('- Simulacao completa da poupanca');
+    writeln('- Resumo rapido da poupanca');
+end;
+
+// Procedimento para mostrar tela inicial
+procedure MostrarTelaInicial;
+begin
+    LimparTela;
+    SetCorTexto(2); // Verde
+    writeln('=== SISTEMA DE GESTAO BANCARIA ===');
+    writeln('=== BANCO DIGITAL ===');
+    ResetCor;
+    writeln;
+    writeln('Bem-vindo ao sistema bancario completo!');
+    writeln;
+end;
+
+// Inicializar saldos
+procedure InicializarSaldos;
+begin
+    // Os saldos agora são carregados do arquivo quando o usuário faz login
+    // Valores padrão só são usados na primeira vez
+end;
+
+// Submenu de operações bancárias
+procedure OperacoesBancarias;
+var
+input: string;
+begin
+    repeat
+        LimparTela;
+        writeln('=== OPERACOES BANCARIAS ===');
+        writeln;
+        MostrarInfo('Usuario: ' + usuarioLogado.nome);
+        MostrarInfo('Conta: ' + usuarioLogado.conta);
+        writeln;
+        MostrarInfo('Saldo da Conta Corrente: ' + 
+                   FloatToStr(saldoContaCorrente) + ' Mt');
+        MostrarInfo('Saldo da Poupanca: ' + 
+                   FloatToStr(saldoPoupanca) + ' Mt');
+        SetCorTexto(3); // Amarelo
+        writeln('Saldo Total: ', 
+                (saldoContaCorrente + saldoPoupanca):0:2, ' Mt');
+        ResetCor;
+        writeln;
+        writeln('1 - Depositar');
+        writeln('2 - Sacar');
+        writeln('3 - Consultar Saldo');
+        writeln('4 - Transferir entre Contas');
+        writeln('5 - Simular Emprestimo');
+        writeln('6 - Simulacao completa da poupanca');
+        writeln('7 - Resumo rapido da poupanca');
+        writeln('8 - Voltar ao Menu Principal');
+        writeln;
+        write('Escolha uma opcao (1-8): ');
+        readln(input);
+        
+        if not TryStrToInt(input, subOpcao) then
+        begin
+            MostrarErro('Opcao invalida!');
+            writeln;
+            write('Pressione Enter para continuar...');
+            readln;
+            continue;
+        end;
+        
+        case subOpcao of
+            1: Depositar;
+            2: Sacar;
+            3: ConsultarSaldo;
+            4: Transferir;
+            5: SimularEmprestimo;
+            6: SimularPoupanca;
+            7: MostrarResumo;
+            8: begin
+                MostrarSucesso('Voltando ao menu principal...');
+                DelaySimples(1000);
+            end;
+            else
+            begin
+                MostrarErro('Opcao invalida! Escolha entre 1 e 8.');
+                DelaySimples(1000);
+            end;
+        end;
+        
+        if subOpcao <> 8 then
+        begin
+            writeln;
+            write('Pressione Enter para continuar...');
+            readln;
+        end;
+        
+    until subOpcao = 8;
+end;
+
+// Menu de autenticação
+procedure MenuAutenticacao;
+var
+input: string;
+begin
+    repeat
+        LimparTela;
+        SetCorTexto(2); // Verde para o menu principal
+        writeln('=== BANCO DIGITAL - ACESSO ===');
+        ResetCor;
+        writeln;
+        writeln('1 - Fazer Login');
+        writeln('2 - Criar Nova Conta');
+        writeln('3 - Recuperar Conta Bloqueada');
+        writeln('4 - Sair do Sistema');
+        writeln;
+        write('Escolha uma opcao (1-4): ');
+        readln(input);
+        
+        if not TryStrToInt(input, opcao) then
+        begin
+            MostrarErro('Opcao invalida! Escolha entre 1 e 4.');
+            writeln;
+            write('Pressione Enter para continuar...');
+            readln;
+            continue;
+        end;
+        
+        case opcao of
+            1: 
+            begin
+                if AutenticarUsuario then
+                begin
+                    contaLogada := true;
+                    MostrarTelaInicial;
+                    OperacoesBancarias;
+                    contaLogada := false;
+                end
+                else
+                begin
+                    writeln;
+                    write('Pressione Enter para continuar...');
+                    readln;
+                end;
+            end;
+            2: 
+            begin
+                CriarConta;
+                writeln;
+                write('Pressione Enter para continuar...');
+                readln;
+            end;
+            3: 
+            begin
+                RecuperarConta;
+                writeln;
+                write('Pressione Enter para continuar...');
+                readln;
+            end;
+            4: 
+            begin
+                LimparTela;
+                Processando(2, 'Saindo do sistema');
+                writeln('=== SISTEMA DE GESTAO BANCARIA ===');
+                writeln;
+                MostrarSucesso('Obrigado por usar nosso sistema bancario!');
+                MostrarSucesso('Volte sempre!');
+            end;
+            else
+            begin
+                MostrarErro('Opcao invalida! Escolha entre 1 e 4.');
+                writeln;
+                write('Pressione Enter para continuar...');
+                readln;
+            end;
+        end;
+        
+    until opcao = 4;
+end;
+
+begin
+    InicializarUsuarios;
+    InicializarSaldos;
+    MostrarTelaInicial;
+    MenuAutenticacao;
+end.
